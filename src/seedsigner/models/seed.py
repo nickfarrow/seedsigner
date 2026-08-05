@@ -145,20 +145,30 @@ class Seed:
         return True
 
 
+    def get_root(self, network: str = SettingsConstants.MAINNET) -> bip32.HDKey:
+        """
+            The BIP-32 master key for this seed.
+
+            Subclasses whose root is not derived from `seed_bytes` via BIP-32's
+            HMAC (e.g. `FrostSeed`) override this.
+        """
+        return bip32.HDKey.from_seed(self.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"])
+
+
     def get_fingerprint(self, network: str = SettingsConstants.MAINNET) -> str:
-        root = bip32.HDKey.from_seed(self.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"])
+        root = self.get_root(network)
         return hexlify(root.child(0).fingerprint).decode('utf-8')
 
 
     def get_xpub(self, wallet_path: str = '/', network: str = SettingsConstants.MAINNET):
         # Import here to avoid slow startup times; takes 1.35s to import the first time
         from seedsigner.helpers import embit_utils
-        return embit_utils.get_xpub(seed_bytes=self.seed_bytes, derivation_path=wallet_path, embit_network=SettingsConstants.map_network_to_embit(network))
+        return embit_utils.get_xpub(root=self.get_root(network), derivation_path=wallet_path)
 
 
     def get_bip85_child_mnemonic(self, bip85_index: int, bip85_num_words: int, network: str = SettingsConstants.MAINNET):
         """Derives the seed's nth BIP-85 child mnemonic"""
-        root = bip32.HDKey.from_seed(self.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"])
+        root = self.get_root(network)
 
         # TODO: Support other BIP-39 wordlist languages!
         return bip85.derive_mnemonic(root, bip85_num_words, bip85_index)

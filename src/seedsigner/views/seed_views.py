@@ -919,18 +919,13 @@ class SeedExportXpubDetailsView(View):
             self.loading_screen.start()
 
             try:
-                from embit.bip32 import HDKey
-                from embit.networks import NETWORKS
-                embit_network = NETWORKS[SettingsConstants.map_network_to_embit(self.settings.get_value(SettingsConstants.SETTING__NETWORK))]
+                network = self.settings.get_value(SettingsConstants.SETTING__NETWORK)
                 version = self.seed.detect_version(
                     derivation_path,
-                    self.settings.get_value(SettingsConstants.SETTING__NETWORK),
+                    network,
                     self.sig_type
                 )
-                root = HDKey.from_seed(
-                    self.seed.seed_bytes,
-                    version=embit_network["xprv"]
-                )
+                root = self.seed.get_root(network)
                 fingerprint = hexlify(root.child(0).fingerprint).decode('utf-8')
                 xprv = root.derive(derivation_path)
                 xpub = xprv.to_public()
@@ -2250,7 +2245,7 @@ class SeedSignMessageSignedMessageQRView(View):
         derivation_path = data["derivation_path"]
         message: str = data["message"]
 
-        self.signed_message = embit_utils.sign_message(seed_bytes=self.seed.seed_bytes, derivation=derivation_path, msg=message.encode())
+        self.signed_message = embit_utils.sign_message(root=self.seed.get_root(), derivation=derivation_path, msg=message.encode())
 
 
     def run(self):

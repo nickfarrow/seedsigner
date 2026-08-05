@@ -3,7 +3,7 @@ import embit
 from binascii import b2a_base64
 from hashlib import sha256
 
-from embit import bip32, compact, ec
+from embit import compact, ec
 from embit.bip32 import HDKey
 from embit.descriptor import Descriptor
 from embit.networks import NETWORKS
@@ -58,8 +58,8 @@ def get_standard_derivation_path(network: str = SettingsConstants.MAINNET, walle
 
 
 
-def get_xpub(seed_bytes, derivation_path: str, embit_network: str = "main") -> HDKey:
-    root = bip32.HDKey.from_seed(seed_bytes, version=NETWORKS[embit_network]["xprv"])
+def get_xpub(root: HDKey, derivation_path: str) -> HDKey:
+    # `root` carries its own network version bytes; see `Seed.get_root()`.
     xprv = root.derive(derivation_path)
     xpub = xprv.to_public()
     return xpub
@@ -188,7 +188,7 @@ def parse_derivation_path(derivation_path: str) -> dict:
 
 
 
-def sign_message(seed_bytes: bytes, derivation: str, msg: bytes, compressed: bool = True, embit_network: str = "main") -> bytes:
+def sign_message(root: HDKey, derivation: str, msg: bytes, compressed: bool = True) -> bytes:
     """
         from: https://github.com/cryptoadvance/specter-diy/blob/b58a819ef09b2bca880a82c7e122618944355118/src/apps/signmessage/signmessage.py
     """
@@ -199,7 +199,6 @@ def sign_message(seed_bytes: bytes, derivation: str, msg: bytes, compressed: boo
         ).digest()
     ).digest()
 
-    root = bip32.HDKey.from_seed(seed_bytes, version=NETWORKS[embit_network]["xprv"])
     prv = root.derive(derivation).key
     sig = secp256k1.ecdsa_sign_recoverable(msghash, prv._secret)
     flag = sig[64]

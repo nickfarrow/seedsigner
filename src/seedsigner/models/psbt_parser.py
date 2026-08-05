@@ -66,7 +66,7 @@ class PSBTParser():
 
 
     def _set_root(self):
-        self.root = bip32.HDKey.from_seed(self.seed.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(self.network)]["xprv"])
+        self.root = self.seed.get_root(self.network)
 
 
     def parse(self):
@@ -386,7 +386,7 @@ class PSBTParser():
             
             # Missing fingerprint fallback
             if derivation_path_obj.fingerprint == b"\x00\x00\x00\x00":
-                root = bip32.HDKey.from_seed(seed.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"])
+                root = seed.get_root(network)
                 try:
                     derived_key = root.derive(derivation_path_obj.derivation)
                     return derived_key.key.sec() == public_key.sec() # Public keys match

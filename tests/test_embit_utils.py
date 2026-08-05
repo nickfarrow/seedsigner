@@ -103,6 +103,7 @@ def test_get_xpub():
 
     from binascii import unhexlify
     from embit import bip39, bip32
+    from embit.networks import NETWORKS
 
     # test vectors originate from:
     #   https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki
@@ -173,20 +174,21 @@ def test_get_xpub():
 
     print()
     for args, expected in vectors_args_expected.items():
+        seed_bytes, derivation_path, embit_network = args
+
+        # `get_xpub()` takes an already-constructed root; the network version bytes now
+        # travel with it (see `Seed.get_root()`).
+        root = bip32.HDKey.from_seed(seed_bytes, version=NETWORKS[embit_network]["xprv"])
+
         print("\nasserting...")
 
-        # call without optional params (default is "main")
-        if args[2] == "main":
-            print(f'  {func.__name__}({args[0]}, "{args[1]}") == "{expected}"')
-            assert str(func(args[0], args[1])) == expected
-
         # call with ordered params
-        print(f'  {func.__name__}(*{args}) == "{expected}"')
-        assert str(func(*args)) == expected
+        print(f'  {func.__name__}(root, "{derivation_path}") == "{expected}"')
+        assert str(func(root, derivation_path)) == expected
 
         # call with named params
-        print(f'  {func.__name__}(seed_bytes={args[0]}, derivation_path="{args[1]}", embit_network="{args[2]}") == "{expected}"')
-        assert str(func(seed_bytes=args[0], derivation_path=args[1], embit_network=args[2])) == expected
+        print(f'  {func.__name__}(root=root, derivation_path="{derivation_path}") == "{expected}"')
+        assert str(func(root=root, derivation_path=derivation_path)) == expected
         
 
 def test_get_single_sig_address():

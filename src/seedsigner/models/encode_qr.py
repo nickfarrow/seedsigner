@@ -1,12 +1,8 @@
 import math
 
-from embit import bip32
-from embit.networks import NETWORKS
 from binascii import hexlify
 from dataclasses import dataclass
 from typing import List
-from embit import bip32
-from embit.networks import NETWORKS
 from embit.psbt import PSBT
 from seedsigner.helpers.ur2.ur_encoder import UREncoder
 from seedsigner.helpers.ur2.ur import UR
@@ -158,7 +154,7 @@ class BaseXpubQrEncoder(BaseQrEncoder):
     def prep_xpub(self):
             
         version = self.seed.detect_version(self.derivation, self.network, self.sig_type)
-        self.root = bip32.HDKey.from_seed(self.seed.seed_bytes, version=NETWORKS[SettingsConstants.map_network_to_embit(self.network)]["xprv"])
+        self.root = self.seed.get_root(self.network)
         self.fingerprint = self.root.child(0).fingerprint
         self.xprv = self.root.derive(self.derivation)
         self.xpub = self.xprv.to_public()
