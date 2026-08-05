@@ -6,6 +6,8 @@ from seedsigner.helpers.frost import (
     InvalidFrostBackupException,
     MismatchedFrostBackupsException,
 )
+from seedsigner.models.seed import FrostSeed, InvalidSeedException
+from seedsigner.models.settings_definition import SettingsConstants
 
 
 # Official test vectors, from the draft BIP and the frostsnap reference implementation.
@@ -204,3 +206,77 @@ class TestRecoverSecret:
         """
         with pytest.raises(MismatchedFrostBackupsException):
             recover([SHARES_2_OF_3[0]])
+
+
+
+class TestFrostSeed:
+    # The recovered scalar is the BIP-32 master key itself, so this pins the whole
+    # chain: recovery -> zero chain code -> xprv.
+    GOLDEN_XPRV = ("xprv9s21ZrQH143K24Mfq5zL5MhWK9hUhhGbd45hLXo2Pq2oqzMMo63oStZzF"
+                   "93yjHmmfwkTW7jWmaf7X9aF3GP9D3mXSChQcm2zAZG6kerWdMw")
+
+    def test_master_key_matches_spec(self):
+        seed = FrostSeed(bytes.fromhex(SECRET_2_OF_3))
+        assert seed.get_root().to_base58() == self.GOLDEN_XPRV
+
+
+    def test_master_key_honors_network(self):
+        seed = FrostSeed(bytes.fromhex(SECRET_2_OF_3))
+        assert seed.get_root(SettingsConstants.TESTNET).to_base58().startswith("tprv")
+
+
+    def test_chain_code_is_zero(self):
+        """The spec pairs the recovered scalar with an all-zero chain code."""
+        assert FrostSeed(bytes.fromhex(SECRET_2_OF_3)).get_root().chain_code == b"\x00" * 32
+
+
+    def test_derives_spec_addresses(self):
+        from seedsigner.helpers import embit_utils
+
+        seed = FrostSeed(bytes.fromhex(SECRET_3_OF_5))
+        xpub = seed.get_xpub(seed.derivation_override())
+        assert str(xpub) == ("xpub6EQcKg7wXymMV5BfoZUAMcMSH5FewPThRnmd8Yh76L6iUCaiDfPBQ"
+                             "LA81You9ouoMm3SKuhwptUoXb1VfihTDLVBJvx2nU6PUJ3Q9DKbMbQ")
+        assert embit_utils.get_single_sig_address(xpub, SettingsConstants.TAPROOT, 0, False) == \
+            "bc1pae0zyxchyndalaprtrc2yxw6rkpsdc7qguapj2kmzgz737dumtuse04mes"
+
+
+    def test_recovered_backups_produce_expected_fingerprint(self):
+        """End to end: words in, wallet fingerprint out."""
+        for shares, expected in [(SHARES_2_OF_3[:2], "79b00088"),
+                                 (SHARES_3_OF_5[:3], "66c1d857")]:
+            seed = FrostSeed(bytes.fromhex(recover(shares)))
+            assert seed.get_fingerprint() == expected
+
+
+    def test_forces_spec_derivation_and_script_type(self):
+        seed = FrostSeed(bytes.fromhex(SECRET_2_OF_3))
+        assert seed.script_override == SettingsConstants.TAPROOT
+        assert seed.derivation_override(SettingsConstants.SINGLE_SIG) == "m/0/0/0/0"
+        assert seed.derivation_override(SettingsConstants.MULTISIG) == "m/0/0/0/0"
+
+
+    def test_mnemonic_only_features_are_disabled(self):
+        seed = FrostSeed(bytes.fromhex(SECRET_2_OF_3))
+        assert seed.seedqr_supported is False
+        assert seed.bip85_supported is False
+        assert seed.passphrase_supported is False
+        assert seed.backup_supported is False
+
+
+    def test_passphrase_is_ignored(self):
+        """No mnemonic means nothing to salt; setting one must not alter the key."""
+        seed = FrostSeed(bytes.fromhex(SECRET_2_OF_3))
+        seed.set_passphrase("anything")
+        assert seed.has_passphrase is False
+        assert seed.get_root().to_base58() == self.GOLDEN_XPRV
+
+
+    @pytest.mark.parametrize("bad_secret", [
+        b"\x00" * 32,                                   # zero scalar
+        b"\xff" * 32,                                   # >= curve order
+        b"\x01" * 31,                                   # too short
+    ])
+    def test_rejects_invalid_scalar(self, bad_secret):
+        with pytest.raises(InvalidSeedException):
+            FrostSeed(bad_secret)
