@@ -327,7 +327,7 @@ class SeedFinalizeView(View):
     def run(self):
         button_data = [self.FINALIZE]
         self.PASSPHRASE.button_label = self.seed.passphrase_label
-        if self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) != SettingsConstants.OPTION__DISABLED:
+        if self.settings.get_value(SettingsConstants.SETTING__PASSPHRASE) != SettingsConstants.OPTION__DISABLED and self.seed.passphrase_supported:
             button_data.append(self.PASSPHRASE)
 
         selected_menu_num = self.run_screen(
@@ -576,7 +576,9 @@ class SeedOptionsView(View):
         button_data.append(self.EXPORT_XPUB)
 
         button_data.append(self.EXPLORER)
-        button_data.append(self.BACKUP)
+
+        if self.seed.backup_supported:
+            button_data.append(self.BACKUP)
 
         if self.settings.get_value(SettingsConstants.SETTING__MESSAGE_SIGNING) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.SIGN_MESSAGE)

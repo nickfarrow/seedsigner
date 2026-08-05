@@ -4,7 +4,7 @@ import hashlib
 import hmac
 
 from binascii import hexlify
-from embit import bip39, bip32, bip85
+from embit import bip39, bip32, bip85, ec
 from embit.networks import NETWORKS
 from typing import List
 
@@ -145,6 +145,17 @@ class Seed:
         return True
 
 
+    @property
+    def passphrase_supported(self) -> bool:
+        return True
+
+
+    @property
+    def backup_supported(self) -> bool:
+        """Whether this seed can be displayed as words for the user to transcribe."""
+        return True
+
+
     def get_root(self, network: str = SettingsConstants.MAINNET) -> bip32.HDKey:
         """
             The BIP-32 master key for this seed.
@@ -248,4 +259,77 @@ class ElectrumSeed(Seed):
 
     @property
     def bip85_supported(self) -> bool:
+        return False
+
+
+
+class FrostSeed(Seed):
+    """
+        A key recovered by recombining FROST threshold backups.
+
+        Unlike every other `Seed`, this one has no mnemonic. The recovered value is a
+        secp256k1 scalar that the spec uses *directly* as the BIP-32 master private key,
+        paired with an all-zero chain code — there is no BIP-39 seed derivation to
+        reverse, so the words can never be recovered or displayed.
+    """
+    def __init__(self, secret_bytes: bytes) -> None:
+        # Deliberately does not call super().__init__(): the base class requires a
+        # mnemonic and derives seed_bytes from it.
+        self._wordlist_language_code = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH
+        self._mnemonic: List[str] = []
+        self._passphrase: str = ""
+
+        try:
+            # Validates both the length and that the scalar is in range.
+            ec.PrivateKey(secret_bytes)
+        except Exception as e:
+            logger.info(repr(e), exc_info=True)
+            raise InvalidSeedException(repr(e))
+
+        self.seed_bytes: bytes = secret_bytes
+
+
+    def get_root(self, network: str = SettingsConstants.MAINNET) -> bip32.HDKey:
+        return bip32.HDKey(
+            ec.PrivateKey(self.seed_bytes),
+            b"\x00" * 32,
+            version=NETWORKS[SettingsConstants.map_network_to_embit(network)]["xprv"],
+        )
+
+
+    def set_passphrase(self, passphrase: str, regenerate_seed: bool = True):
+        # A BIP-39 passphrase has no meaning without a mnemonic to salt. Ignore rather
+        # than raise; the base implementation would try to re-derive from an empty
+        # mnemonic.
+        self._passphrase = ""
+
+
+    @property
+    def script_override(self) -> str:
+        return SettingsConstants.TAPROOT
+
+
+    def derivation_override(self, sig_type: str = SettingsConstants.SINGLE_SIG) -> str:
+        # Fixed path from the spec's "Recovery into a Bitcoin wallet":
+        # root -> master, application=Bitcoin, account type=Taproot, account index.
+        return "m/0/0/0/0"
+
+
+    @property
+    def seedqr_supported(self) -> bool:
+        return False
+
+
+    @property
+    def bip85_supported(self) -> bool:
+        return False
+
+
+    @property
+    def passphrase_supported(self) -> bool:
+        return False
+
+
+    @property
+    def backup_supported(self) -> bool:
         return False
