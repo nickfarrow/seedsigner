@@ -123,6 +123,8 @@ class Controller(Singleton):
     address_explorer_data: dict = None
 
     sign_message_data: dict = None
+
+    frost_data: dict = None
     # TODO: end refactor section
 
     # Destination placeholder for when we need to jump out to a side flow but intend to
@@ -303,6 +305,7 @@ class Controller(Singleton):
                     self.psbt = None
                     self.psbt_parser = None
                     self.psbt_seed = None
+                    self.frost_data = None
                 
                 logger.info(f"\nback_stack: {self.back_stack}")
 

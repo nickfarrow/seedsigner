@@ -12,8 +12,9 @@ from seedsigner.gui.screens import (RET_CODE__BACK_BUTTON, ButtonListScreen,
     WarningScreen, DireWarningScreen, seed_screens)
 from seedsigner.gui.screens.screen import ButtonOption, ButtonOptionWithoutTranslation
 from seedsigner.models.encode_qr import CompactSeedQrEncoder, GenericStaticQrEncoder, SeedQrEncoder, SpecterLegacyXPubQrEncoder, StaticXpubQrEncoder, UrXpubQrEncoder
+from seedsigner.helpers import frost
 from seedsigner.models.qr_type import QRType
-from seedsigner.models.seed import Seed
+from seedsigner.models.seed import FrostSeed, Seed
 from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.models.settings_definition import SettingsDefinition
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
@@ -164,6 +165,7 @@ class LoadSeedView(View):
     TYPE_12WORD = ButtonOption("Enter 12-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_24WORD = ButtonOption("Enter 24-word seed", FontAwesomeIconConstants.KEYBOARD)
     TYPE_ELECTRUM = ButtonOption("Enter Electrum seed", FontAwesomeIconConstants.KEYBOARD)
+    TYPE_FROST = ButtonOption("Restore FROST backups", FontAwesomeIconConstants.KEYBOARD)
     CREATE = ButtonOption("Create a seed", SeedSignerIconConstants.PLUS)
 
     def run(self):
@@ -175,7 +177,10 @@ class LoadSeedView(View):
 
         if self.settings.get_value(SettingsConstants.SETTING__ELECTRUM_SEEDS) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.TYPE_ELECTRUM)
-        
+
+        if self.settings.get_value(SettingsConstants.SETTING__FROST_BACKUPS) == SettingsConstants.OPTION__ENABLED:
+            button_data.append(self.TYPE_FROST)
+
         button_data.append(self.CREATE)
 
         selected_menu_num = self.run_screen(
@@ -202,6 +207,9 @@ class LoadSeedView(View):
 
         elif button_data[selected_menu_num] == self.TYPE_ELECTRUM:
             return Destination(SeedElectrumMnemonicStartView)
+
+        elif button_data[selected_menu_num] == self.TYPE_FROST:
+            return Destination(SeedFrostStartView)
 
         elif button_data[selected_menu_num] == self.CREATE:
             from .tools_views import ToolsMenuView
@@ -519,6 +527,325 @@ class SeedElectrumMnemonicStartView(View):
         self.controller.storage.init_pending_mnemonic(num_words=12, is_electrum=True)
 
         return Destination(SeedMnemonicEntryView)
+
+
+
+"""****************************************************************************
+    Restoring a wallet from FROST key backups
+****************************************************************************"""
+class BaseFrostView(View):
+    """
+        Shared access to the in-progress FROST recovery state.
+
+        `controller.frost_data` is allocated once by `SeedFrostSelectThresholdView` and is
+        addressed by position, so navigating backwards and re-entering any value is
+        idempotent. The Controller wipes it on any return to the main menu.
+    """
+    def __init__(self):
+        super().__init__()
+        if not self.controller.frost_data:
+            raise Exception("Routing error: frost_data hasn't been set")
+
+
+    @property
+    def threshold(self) -> int:
+        return self.controller.frost_data["threshold"]
+
+
+    @property
+    def backups(self) -> list:
+        return self.controller.frost_data["backups"]
+
+
+
+class SeedFrostStartView(View):
+    """
+        Explains the backup format before entry begins.
+    """
+    def run(self):
+        self.run_screen(
+            WarningScreen,
+            title=_("FROST Restore"),
+            status_headline=None,
+            text=_("Enter each key's number and its 25 words. All keys must be from the same wallet."),
+            show_back_button=False,
+        )
+
+        # Forward without joining the back stack, so backing out of the threshold prompt
+        # returns to the Load Seed menu rather than re-showing this warning.
+        return Destination(SeedFrostSelectThresholdView, skip_current_view=True)
+
+
+
+class SeedFrostSelectThresholdView(View):
+    """
+        How many keys are needed to sign. This also fixes the degree of the polynomial
+        being reconstructed, so exactly this many must be entered.
+    """
+    MAX_THRESHOLD = 8
+
+    def run(self):
+        ret = self.run_screen(
+            seed_screens.SeedFrostNumberEntryScreen,
+            title=_("Keys Needed"),
+        )
+
+        if ret == RET_CODE__BACK_BUTTON:
+            self.controller.frost_data = None
+            return Destination(BackStackView)
+
+        threshold = int(ret)
+        if not 1 <= threshold <= self.MAX_THRESHOLD:
+            return Destination(SeedFrostInvalidThresholdView, skip_current_view=True)
+
+        self.controller.frost_data = dict(
+            threshold=threshold,
+            backups=[dict(index=None, words=[None] * frost.NUM_WORDS, scalar=None, poly=None) for _ in range(threshold)],
+        )
+
+        return Destination(SeedFrostShareIndexView, view_args=dict(backup_num=0))
+
+
+
+class SeedFrostInvalidThresholdView(View):
+    TRY_AGAIN = ButtonOption("Try again")
+
+    def run(self):
+        self.run_screen(
+            DireWarningScreen,
+            title=_("Key Count Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Invalid Number"),
+            # TRANSLATOR_NOTE: Inserts the maximum supported threshold
+            text=_("Enter how many keys are needed to sign, from 1 to {}.").format(SeedFrostSelectThresholdView.MAX_THRESHOLD),
+            show_back_button=False,
+            button_data=[self.TRY_AGAIN],
+        )
+
+        return Destination(SeedFrostSelectThresholdView, skip_current_view=True)
+
+
+
+class SeedFrostShareIndexView(BaseFrostView):
+    """
+        The `#N` printed on the backup. It isn't encoded in the words, but it is part of
+        the checksum preimage, so a wrong one surfaces as a checksum failure.
+    """
+    def __init__(self, backup_num: int = 0):
+        super().__init__()
+        self.backup_num = backup_num
+
+
+    def run(self):
+        backup = self.backups[self.backup_num]
+
+        ret = self.run_screen(
+            seed_screens.SeedFrostNumberEntryScreen,
+            title=_("Key Number"),
+            # `0` is a valid key number, so this can't lean on truthiness.
+            initial_value=str(backup["index"]) if backup["index"] is not None else "",
+        )
+
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        index = int(ret)
+        reason = None
+        if any(other["index"] == index for i, other in enumerate(self.backups) if i != self.backup_num):
+            reason = SeedFrostInvalidShareIndexView.DUPLICATE
+        elif index == 0 and self.threshold > 1:
+            reason = SeedFrostInvalidShareIndexView.WHOLE_WALLET
+        elif not frost.MIN_SHARE_INDEX <= index <= frost.MAX_SHARE_INDEX:
+            reason = SeedFrostInvalidShareIndexView.OUT_OF_RANGE
+
+        if reason:
+            return Destination(
+                SeedFrostInvalidShareIndexView,
+                view_args=dict(backup_num=self.backup_num, reason=reason),
+                skip_current_view=True,
+            )
+
+        backup["index"] = index
+
+        return Destination(
+            SeedFrostWordEntryView,
+            view_args=dict(backup_num=self.backup_num, cur_word_index=0),
+        )
+
+
+
+class SeedFrostInvalidShareIndexView(BaseFrostView):
+    TRY_AGAIN = ButtonOption("Try again")
+
+    DUPLICATE = "duplicate"
+    WHOLE_WALLET = "whole_wallet"
+    OUT_OF_RANGE = "out_of_range"
+
+    def __init__(self, backup_num: int, reason: str = OUT_OF_RANGE):
+        super().__init__()
+        self.backup_num = backup_num
+        self.reason = reason
+
+
+    def run(self):
+        if self.reason == self.DUPLICATE:
+            text = _("That key number has already been entered.")
+        elif self.reason == self.WHOLE_WALLET:
+            text = _("Key #0 is a whole wallet on its own; it can't be combined with other keys.")
+        else:
+            text = _("That key number is too large.")
+
+        self.run_screen(
+            DireWarningScreen,
+            title=_("Key Number Error"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=_("Invalid Number"),
+            text=text,
+            show_back_button=False,
+            button_data=[self.TRY_AGAIN],
+        )
+
+        return Destination(
+            SeedFrostShareIndexView,
+            view_args=dict(backup_num=self.backup_num),
+            skip_current_view=True,
+        )
+
+
+
+class SeedFrostWordEntryView(BaseFrostView):
+    """
+        One word at a time, re-entering itself for the next. Mirrors
+        `SeedMnemonicEntryView`, but over 25 words and repeated for each key.
+    """
+    def __init__(self, backup_num: int = 0, cur_word_index: int = 0):
+        super().__init__()
+        self.backup_num = backup_num
+        self.cur_word_index = cur_word_index
+
+
+    def run(self):
+        backup = self.backups[self.backup_num]
+        cur_word = backup["words"][self.cur_word_index]
+
+        ret = self.run_screen(
+            seed_screens.SeedMnemonicEntryScreen,
+            # TRANSLATOR_NOTE: Inserts the key number and the word number, e.g. "#3: Word 7"
+            title=_("#{}: Word {}").format(backup["index"], self.cur_word_index + 1),
+            initial_letters=list(cur_word) if cur_word else ["a"],
+            # The backup format always uses the English wordlist; the words encode bits,
+            # not language.
+            wordlist=Seed.get_wordlist(wordlist_language_code=SettingsConstants.WORDLIST_LANGUAGE__ENGLISH),
+        )
+
+        if ret == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        backup["words"][self.cur_word_index] = ret
+
+        if self.cur_word_index < frost.NUM_WORDS - 1:
+            return Destination(
+                SeedFrostWordEntryView,
+                view_args=dict(backup_num=self.backup_num, cur_word_index=self.cur_word_index + 1),
+            )
+
+        # This backup is complete; its own checksum can be verified now.
+        try:
+            backup["scalar"], backup["poly"] = frost.decode_backup(backup["index"], backup["words"])
+        except frost.InvalidFrostBackupException:
+            return Destination(SeedFrostInvalidBackupView, view_args=dict(backup_num=self.backup_num))
+
+        if self.backup_num + 1 < self.threshold:
+            return Destination(
+                SeedFrostShareIndexView,
+                view_args=dict(backup_num=self.backup_num + 1),
+            )
+
+        # All backups are in; recombine. Import locally so the test suite's patch of
+        # LoadingScreenThread applies.
+        from seedsigner.gui.screens.screen import LoadingScreenThread
+        self.loading_screen = LoadingScreenThread(text=_("Restoring..."))
+        self.loading_screen.start()
+        try:
+            secret = frost.recover_secret(
+                [(b["index"], b["scalar"], b["poly"]) for b in self.backups]
+            )
+        except frost.MismatchedFrostBackupsException:
+            return Destination(SeedFrostMismatchedBackupsView)
+        finally:
+            self.loading_screen.stop()
+
+        self.controller.storage.set_pending_seed(FrostSeed(secret))
+
+        return Destination(SeedFinalizeView)
+
+
+
+class SeedFrostInvalidBackupView(BaseFrostView):
+    EDIT = ButtonOption("Review & edit")
+    DISCARD = ButtonOption("Discard", button_label_color="red")
+
+    def __init__(self, backup_num: int):
+        super().__init__()
+        self.backup_num = backup_num
+
+
+    def run(self):
+        button_data = [self.EDIT, self.DISCARD]
+
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("Invalid Key Backup!"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=None,
+            # TRANSLATOR_NOTE: Inserts the key number that failed its checksum
+            text=_("Checksum failure on key #{}; check the number and the words.").format(
+                self.backups[self.backup_num]["index"]
+            ),
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.EDIT:
+            return Destination(
+                SeedFrostShareIndexView,
+                view_args=dict(backup_num=self.backup_num),
+            )
+
+        elif button_data[selected_menu_num] == self.DISCARD:
+            self.controller.frost_data = None
+            return Destination(MainMenuView)
+
+
+
+class SeedFrostMismatchedBackupsView(BaseFrostView):
+    """
+        Every backup passed its own checksum but they don't reconstruct a single wallet —
+        typically keys from two different wallets, or the wrong number of them.
+    """
+    REVIEW = ButtonOption("Review & edit")
+    DISCARD = ButtonOption("Discard", button_label_color="red")
+
+    def run(self):
+        button_data = [self.REVIEW, self.DISCARD]
+
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            title=_("Keys Don't Match"),
+            status_icon_name=SeedSignerIconConstants.ERROR,
+            status_headline=None,
+            text=_("These keys are not from the same wallet."),
+            show_back_button=False,
+            button_data=button_data,
+        )
+
+        if button_data[selected_menu_num] == self.REVIEW:
+            # Keep everything entered so the user can walk through and correct it.
+            return Destination(SeedFrostShareIndexView, view_args=dict(backup_num=0))
+
+        elif button_data[selected_menu_num] == self.DISCARD:
+            self.controller.frost_data = None
+            return Destination(MainMenuView)
 
 
 
