@@ -279,6 +279,23 @@ def generate_screenshots(locale):
 
 
         @contextmanager
+        def mock_frost_recovery_in_progress():
+            """
+            A partially-entered 2-of-2 FROST restore: the first backup's number is set so
+            the Views that display it have something to show.
+            """
+            frost_data = dict(
+                threshold=2,
+                backups=[
+                    dict(index=1, words=[None] * 25, scalar=None, poly=None),
+                    dict(index=None, words=[None] * 25, scalar=None, poly=None),
+                ],
+            )
+            with patch.object(controller, 'frost_data', frost_data):
+                yield
+
+
+        @contextmanager
         def mock_multisig_wallet_descriptor_loaded():
             with patch.object(controller, 'multisig_wallet_descriptor', embit.descriptor.Descriptor.from_string(MULTISIG_WALLET_DESCRIPTOR)):
                 yield
@@ -425,6 +442,21 @@ def generate_screenshots(locale):
                 ScreenshotConfig(seed_views.SeedSignMessageConfirmAddressView),
 
                 ScreenshotConfig(seed_views.SeedElectrumMnemonicStartView),
+
+                ScreenshotConfig(seed_views.SeedFrostStartView),
+                ScreenshotConfig(seed_views.SeedFrostSelectThresholdView),
+                ScreenshotConfig(seed_views.SeedFrostInvalidThresholdView),
+                ScreenshotConfig(seed_views.SeedFrostShareIndexView, dict(backup_num=1),
+                                 mock_context_manager=mock_frost_recovery_in_progress),
+                ScreenshotConfig(seed_views.SeedFrostInvalidShareIndexView, dict(backup_num=1, is_duplicate=True),
+                                 screenshot_name="SeedFrostInvalidShareIndexView_duplicate",
+                                 mock_context_manager=mock_frost_recovery_in_progress),
+                ScreenshotConfig(seed_views.SeedFrostWordEntryView, dict(backup_num=0, cur_word_index=0),
+                                 mock_context_manager=mock_frost_recovery_in_progress),
+                ScreenshotConfig(seed_views.SeedFrostInvalidBackupView, dict(backup_num=0),
+                                 mock_context_manager=mock_frost_recovery_in_progress),
+                ScreenshotConfig(seed_views.SeedFrostMismatchedBackupsView,
+                                 mock_context_manager=mock_frost_recovery_in_progress),
             ],
             "PSBT Views": [
                 ScreenshotConfig(psbt_views.PSBTSelectSeedView, mock_context_manager=mock_controller_psbt_seed_empty),

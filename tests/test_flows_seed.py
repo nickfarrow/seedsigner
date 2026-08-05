@@ -6,9 +6,10 @@ import pytest
 from base import BaseTest, FlowTest, FlowStep
 from base import FlowTestInvalidButtonDataSelectionException
 
+from seedsigner.controller import Controller
 from seedsigner.gui.screens.screen import RET_CODE__BACK_BUTTON, ButtonOption
 from seedsigner.models.settings import Settings, SettingsConstants
-from seedsigner.models.seed import ElectrumSeed, Seed
+from seedsigner.models.seed import ElectrumSeed, FrostSeed, Seed
 from seedsigner.views.view import MainMenuView, OptionDisabledView, View, NetworkMismatchErrorView
 from seedsigner.views import seed_views, scan_views, settings_views
 
@@ -825,3 +826,281 @@ class TestMessageSigningFlows(FlowTest):
         expect_unsupported_derivation(self.load_custom_derivation_into_decoder)
 
 
+
+
+
+class TestFrostFlows(FlowTest):
+    """
+        Restoring a key from FROST threshold backups.
+
+        Vectors are the official ones; see tests/test_frost.py.
+    """
+    SHARES_2_OF_3 = [
+        (1, "MUTUAL JEANS SNAP STING BLESS JOURNEY MORAL BREAD ROOM LIMIT DOSE GRAVITY SORT DELIVER OUTDOOR RIPPLE DONKEY BLOUSE PLAY CART CENTURY MAXIMUM MAKE LOCAL MOBILE"),
+        (2, "CASH TRASH FOIL PREFER BUTTER IDEA BRAVE BITTER ITEM WINK DRIFT SMILE TOMATO LUNCH OPTION HERO THREE ENGINE BLESS MANAGE HORSE JAR ADVICE SHERIFF BUSINESS"),
+        (3, "REGION FINISH TRAVEL LAUNDRY CHEAP HAIR PLUNGE BANANA CRACK INTEREST DURING COTTON PHONE DISAGREE CRUNCH AIRPORT CANCEL FOLD LAUNDRY PONY LOBSTER LENS MAMMAL CLOTH FINGER"),
+    ]
+    FINGERPRINT_2_OF_3 = "79b00088"
+
+    SHARE_3_OF_5_NUM_2 = (2, "SUGAR GENERAL PARK VOYAGE CREEK FLY MOTOR ALWAYS WAVE SUNNY WARRIOR DIAMOND WAVE SUNSET ANY LEFT LIGHT FLOAT VAULT GENUINE ELBOW TENNIS BECOME TABLE CLAIM")
+
+
+    def enable_frost(self):
+        Settings.get_instance().set_value(SettingsConstants.SETTING__FROST_BACKUPS, SettingsConstants.OPTION__ENABLED)
+
+
+    def entry_steps(self) -> list[FlowStep]:
+        """Navigate from the main menu to the threshold prompt."""
+        return [
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SEEDS),
+            FlowStep(seed_views.SeedsMenuView, is_redirect=True),  # auto-redirects when no seeds are loaded
+            FlowStep(seed_views.LoadSeedView, button_data_selection=seed_views.LoadSeedView.TYPE_FROST),
+            FlowStep(seed_views.SeedFrostStartView),  # warning screen; no relevant button data selection
+        ]
+
+
+    def backup_steps(self, share) -> list[FlowStep]:
+        """Enter one backup: its number, then its 25 words."""
+        index, words = share
+        steps = [FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value=str(index))]
+        for word in words.lower().split():
+            steps.append(FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=word))
+        return steps
+
+
+    def test_restore_flow(self):
+        """Entering `threshold` valid backups should restore the key and load it."""
+        self.enable_frost()
+
+        sequence = self.entry_steps()
+        sequence.append(FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"))
+        for share in self.SHARES_2_OF_3[:2]:
+            sequence += self.backup_steps(share)
+        sequence += [
+            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+            FlowStep(seed_views.SeedOptionsView),
+        ]
+
+        self.run_sequence(sequence)
+
+        seed = self.controller.storage.seeds[0]
+        assert isinstance(seed, FrostSeed)
+        assert seed.get_fingerprint() == self.FINGERPRINT_2_OF_3
+
+
+    def test_any_threshold_subset_restores_the_same_key(self):
+        """Any 2 of the 3 backups must restore the same key."""
+        for shares in [self.SHARES_2_OF_3[:2], self.SHARES_2_OF_3[1:], [self.SHARES_2_OF_3[0], self.SHARES_2_OF_3[2]]]:
+            BaseTest.reset_controller()
+            self.enable_frost()
+
+            sequence = self.entry_steps()
+            sequence.append(FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"))
+            for share in shares:
+                sequence += self.backup_steps(share)
+            sequence += [
+                FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+                FlowStep(seed_views.SeedOptionsView),
+            ]
+            self.run_sequence(sequence)
+
+            # reset_controller() replaced the singleton, so re-fetch rather than using
+            # the instance captured in setup_method().
+            assert Controller.get_instance().storage.seeds[0].get_fingerprint() == self.FINGERPRINT_2_OF_3
+
+
+    def test_option_is_hidden_when_disabled(self):
+        """The menu entry must not appear unless the setting is enabled."""
+        with pytest.raises(FlowTestInvalidButtonDataSelectionException):
+            self.run_sequence([
+                FlowStep(MainMenuView, button_data_selection=MainMenuView.SEEDS),
+                FlowStep(seed_views.SeedsMenuView, is_redirect=True),
+                FlowStep(seed_views.LoadSeedView, button_data_selection=seed_views.LoadSeedView.TYPE_FROST),
+            ])
+
+
+    @pytest.mark.parametrize("threshold", ["0", "9"])
+    def test_invalid_threshold(self, threshold):
+        self.enable_frost()
+
+        self.run_sequence(
+            self.entry_steps() + [
+                FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value=threshold),
+                FlowStep(seed_views.SeedFrostInvalidThresholdView, button_data_selection=seed_views.SeedFrostInvalidThresholdView.TRY_AGAIN),
+                FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value=RET_CODE__BACK_BUTTON),
+                FlowStep(seed_views.LoadSeedView),
+            ]
+        )
+
+
+    def test_invalid_share_index(self):
+        self.enable_frost()
+
+        self.run_sequence(
+            self.entry_steps() + [
+                FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"),
+                FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value="0"),
+                FlowStep(seed_views.SeedFrostInvalidShareIndexView, button_data_selection=seed_views.SeedFrostInvalidShareIndexView.TRY_AGAIN),
+                FlowStep(seed_views.SeedFrostShareIndexView),
+            ]
+        )
+
+
+    def test_duplicate_share_index(self):
+        """The same backup number can't be used twice."""
+        self.enable_frost()
+
+        sequence = self.entry_steps()
+        sequence.append(FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"))
+        sequence += self.backup_steps(self.SHARES_2_OF_3[0])
+        sequence += [
+            FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value="1"),  # already used
+            FlowStep(seed_views.SeedFrostInvalidShareIndexView, button_data_selection=seed_views.SeedFrostInvalidShareIndexView.TRY_AGAIN),
+            FlowStep(seed_views.SeedFrostShareIndexView),
+        ]
+
+        self.run_sequence(sequence)
+
+
+    def test_words_checksum_failure(self):
+        """A mistyped word must be caught as soon as that backup is complete."""
+        self.enable_frost()
+
+        index, words = self.SHARES_2_OF_3[0]
+        corrupted = words.lower().split()
+        corrupted[-1] = "abandon"
+
+        sequence = self.entry_steps()
+        sequence += [
+            FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"),
+            FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value=str(index)),
+        ]
+        for word in corrupted:
+            sequence.append(FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=word))
+        sequence += [
+            FlowStep(seed_views.SeedFrostInvalidBackupView, button_data_selection=seed_views.SeedFrostInvalidBackupView.DISCARD),
+            FlowStep(MainMenuView),
+        ]
+
+        self.run_sequence(sequence)
+
+        assert self.controller.frost_data is None
+        assert len(self.controller.storage.seeds) == 0
+
+
+    def test_words_checksum_failure_can_be_edited(self):
+        """After a checksum failure, "Review & edit" returns to that backup's number."""
+        self.enable_frost()
+
+        index, words = self.SHARES_2_OF_3[0]
+        corrupted = words.lower().split()
+        corrupted[-1] = "abandon"
+
+        sequence = self.entry_steps()
+        sequence += [
+            FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"),
+            FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value=str(index)),
+        ]
+        for word in corrupted:
+            sequence.append(FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=word))
+        sequence += [
+            FlowStep(seed_views.SeedFrostInvalidBackupView, button_data_selection=seed_views.SeedFrostInvalidBackupView.EDIT),
+            FlowStep(seed_views.SeedFrostShareIndexView),
+        ]
+
+        self.run_sequence(sequence)
+
+
+    def test_backups_from_different_keys(self):
+        """
+        Two individually-valid backups that belong to different wallets must be caught by
+        the polynomial checksum.
+        """
+        self.enable_frost()
+
+        sequence = self.entry_steps()
+        sequence.append(FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"))
+        sequence += self.backup_steps(self.SHARES_2_OF_3[0])
+        sequence += self.backup_steps(self.SHARE_3_OF_5_NUM_2)
+        sequence += [
+            FlowStep(seed_views.SeedFrostMismatchedBackupsView, button_data_selection=seed_views.SeedFrostMismatchedBackupsView.DISCARD),
+            FlowStep(MainMenuView),
+        ]
+
+        self.run_sequence(sequence)
+
+        assert self.controller.frost_data is None
+        assert len(self.controller.storage.seeds) == 0
+
+
+    def test_back_from_threshold_returns_to_load_seed_menu(self):
+        """The intro warning forwards past itself, so back must not re-show it."""
+        self.enable_frost()
+
+        self.run_sequence(
+            self.entry_steps() + [
+                FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value=RET_CODE__BACK_BUTTON),
+                FlowStep(seed_views.LoadSeedView),
+            ]
+        )
+
+        assert self.controller.frost_data is None
+
+
+    def test_back_through_word_entry(self):
+        """Backing out of word 1 returns to the backup number prompt."""
+        self.enable_frost()
+
+        index, words = self.SHARES_2_OF_3[0]
+        first_two = words.lower().split()[:2]
+
+        self.run_sequence(
+            self.entry_steps() + [
+                FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"),
+                FlowStep(seed_views.SeedFrostShareIndexView, screen_return_value=str(index)),
+                FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=first_two[0]),
+                FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=first_two[1]),
+                FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=RET_CODE__BACK_BUTTON),  # back to word 2
+                FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=RET_CODE__BACK_BUTTON),  # back to word 1
+                FlowStep(seed_views.SeedFrostWordEntryView, screen_return_value=RET_CODE__BACK_BUTTON),  # back to the number
+                FlowStep(seed_views.SeedFrostShareIndexView),
+            ]
+        )
+
+
+    def restore_steps(self) -> list[FlowStep]:
+        """Full sequence up to (but not including) SeedFinalizeView."""
+        sequence = self.entry_steps()
+        sequence.append(FlowStep(seed_views.SeedFrostSelectThresholdView, screen_return_value="2"))
+        for share in self.SHARES_2_OF_3[:2]:
+            sequence += self.backup_steps(share)
+        return sequence
+
+
+    def test_passphrase_option_is_hidden(self):
+        """
+        A restored FROST key has no mnemonic to salt, so the BIP-39 passphrase button must
+        be absent even though the setting is enabled.
+        """
+        self.enable_frost()
+        self.settings.set_value(SettingsConstants.SETTING__PASSPHRASE, SettingsConstants.OPTION__ENABLED)
+
+        sequence = self.restore_steps()
+        sequence.append(FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.PASSPHRASE))
+
+        with pytest.raises(FlowTestInvalidButtonDataSelectionException):
+            self.run_sequence(sequence)
+
+
+    def test_backup_option_is_hidden(self):
+        """There are no words to transcribe, so "Backup seed" must be absent."""
+        self.enable_frost()
+
+        sequence = self.restore_steps()
+        sequence += [
+            FlowStep(seed_views.SeedFinalizeView, button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+            FlowStep(seed_views.SeedOptionsView, button_data_selection=seed_views.SeedOptionsView.BACKUP),
+        ]
+
+        with pytest.raises(FlowTestInvalidButtonDataSelectionException):
+            self.run_sequence(sequence)

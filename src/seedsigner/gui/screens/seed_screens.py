@@ -538,6 +538,23 @@ class SeedWordsScreen(WarningEdgesMixin, ButtonListScreen):
 
 
 @dataclass
+class SeedFrostNumberEntryScreen(KeyboardScreen):
+    """
+        Digits-only entry. Unlike the other keyboard Screens this one doesn't set its own
+        title, so it serves both the threshold and the share index prompts.
+    """
+    def __post_init__(self):
+        self.rows = 3
+        self.cols = 5
+        self.keys_charset = "0123456789"
+        self.show_save_button = True
+        self.custom_additional_keys = [Keyboard.KEY_BACKSPACE_5]
+
+        super().__post_init__()
+
+
+
+@dataclass
 class SeedBIP85SelectChildIndexScreen(KeyboardScreen):
     def __post_init__(self):
         self.title = _("BIP-85 Index")
